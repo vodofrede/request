@@ -1,0 +1,6 @@
+# temporary files
+/target
+
+# editors
+.fleet
+.vscode
