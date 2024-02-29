@@ -49,7 +49,7 @@ use std::{
 ///
 /// let data = Example { code: 123, message: "hello".to_string() };
 /// let json = miniserde::json::to_string(&data);
-/// let request = Request::post("example.org/api").body(&json);
+/// let request = Request::post("example.org/api", &json);
 /// assert_eq!(
 ///     format!("{request}"),
 ///     "POST /api HTTP/1.1\r\nHost: example.org\r\n\r\n{\"code\":123,\"message\":\"hello\"}"
@@ -72,7 +72,7 @@ impl<'a> Request<'a> {
     ///
     /// Convenience functions are provided for each HTTP method [`Request::get`], [`Request::post`] etc.
     ///
-    /// # Usage
+    /// # Examples
     ///
     /// ```rust
     /// # use request::*;
@@ -90,11 +90,11 @@ impl<'a> Request<'a> {
 
     /// Add a body to the request.
     ///
-    /// # Usage
+    /// # Examples
     ///
     /// ```rust
     /// # use request::*;
-    /// let request = Request::post("example.org").body("Hello Server!");
+    /// let request = Request::new("example.org", Method::POST).body("Hello Server!");
     /// assert_eq!(format!("{request}"), "POST / HTTP/1.1\r\nHost: example.org\r\n\r\nHello Server!");
     /// ```
     pub fn body(self, body: &'a str) -> Self {
@@ -105,7 +105,7 @@ impl<'a> Request<'a> {
 
     /// Add a header to the request.
     ///
-    /// # Usage
+    /// # Examples
     ///
     /// ```rust
     /// # use request::*;
@@ -119,7 +119,7 @@ impl<'a> Request<'a> {
 
     /// Construct a new GET request.
     ///
-    /// # Usage
+    /// # Examples
     ///
     /// ```rust
     /// # use request::*;
@@ -131,11 +131,29 @@ impl<'a> Request<'a> {
     }
 
     /// Construct a new POST request.
-    pub fn post(url: &'a str) -> Self {
-        Request::new(url, Method::POST)
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// # use request::*;
+    /// let request = Request::post("example.org", r#"{ "hello": "world"}"#);
+    /// assert_eq!(format!("{request}"), "POST / HTTP/1.1\r\nHost: example.org\r\n\r\n{ \"hello\": \"world\"}")
+    /// ```
+    pub fn post(url: &'a str, body: &'a str) -> Self {
+        Request::new(url, Method::POST).body(body)
     }
 
     /// Dispatch the request.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// # use request::*;
+    /// // ... start a local server on port 8000 ...
+    /// let request = Request::get("localhost:8000");
+    /// let response = request.send().expect("request failed");
+    /// assert_eq!(response.status, 200);
+    /// ```
     pub fn send(&self) -> Result<Response, IoError> {
         // format the message
         let message = format!("{self}");
@@ -153,7 +171,6 @@ impl<'a> Request<'a> {
         let lines = BufReader::new(stream)
             .lines()
             .map(|l| l.unwrap())
-            .inspect(|l| println!("{l}"))
             .collect::<Vec<_>>();
         let received = lines.join("\n");
 
