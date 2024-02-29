@@ -11,7 +11,8 @@ use std::{
     collections::HashMap,
     fmt,
     io::{BufRead, BufReader, Error as IoError, Write},
-    iter, net,
+    iter,
+    net::{IpAddr, Ipv4Addr, TcpStream, ToSocketAddrs, UdpSocket},
 };
 
 /// An HTTP request.
@@ -55,6 +56,7 @@ use std::{
 ///     "POST /api HTTP/1.1\r\nHost: example.org\r\n\r\n{\"code\":123,\"message\":\"hello\"}"
 /// );
 /// ```
+#[must_use]
 #[derive(Debug, Clone)]
 pub struct Request<'a> {
     /// Request URL.
@@ -160,17 +162,16 @@ impl<'a> Request<'a> {
         dbg!(&message);
 
         // create the stream
-        // todo: resolve url with dns
-        let host = host(self.url).unwrap();
-        let mut stream = net::TcpStream::connect(host)?;
+        let host = resolve(host(self.url).unwrap())?;
+        let mut stream = TcpStream::connect((host, 80))?;
 
         // send the message
-        stream.write(message.as_bytes())?;
+        stream.write_all(message.as_bytes())?;
 
         // receive the response
         let lines = BufReader::new(stream)
             .lines()
-            .map(|l| l.unwrap())
+            .map_while(Result::ok)
             .collect::<Vec<_>>();
         let received = lines.join("\n");
 
@@ -217,12 +218,13 @@ pub enum Method {
 #[derive(Debug, Clone)]
 pub struct Response {
     pub version: String,
-    pub status: u64,
+    pub status: u16,
     pub reason: String,
     pub headers: HashMap<String, String>,
     pub body: Option<String>,
 }
 impl Response {
+    /// Parse the raw HTTP response into a structured [`Request`].
     fn parse(message: &str) -> Result<Self, &'static str> {
         // construct a regex: HTTP-Version Status-Code Reason-Phrase CRLF headers CRLF message-body
         static MSG_REGEX: Lazy<Regex> = Lazy::new(|| {
@@ -240,12 +242,16 @@ impl Response {
         // parse headers
         let headers = parts
             .name("headers")
-            .map(|m| m.as_str())
-            .unwrap_or("")
+            .map_or("", |m| m.as_str())
             .lines()
-            .map(|l| l.split_once(": ").unwrap())
+            .filter_map(|l| l.split_once(": "))
             .map(|(a, b)| (a.to_string(), b.to_string()))
             .collect::<HashMap<String, String>>();
+
+        // check if redirect
+        if status == 301 {
+            todo!()
+        }
 
         // parse body
         let body = parts.name("body").map(|m| m.as_str().to_string());
@@ -266,6 +272,7 @@ impl Response {
 static URI_REGEX: Lazy<Regex> = Lazy::new(|| {
     Regex::new("(?:(?P<scheme>https?)://)?(?P<host>[0-9a-zA-Z:\\.\\-]+)(?P<path>/(?:.)*)?").unwrap()
 });
+#[allow(dead_code)]
 fn scheme(url: &str) -> Option<&str> {
     URI_REGEX.captures(url)?.name("scheme").map(|m| m.as_str())
 }
@@ -278,4 +285,62 @@ fn path(url: &str) -> Option<&str> {
         .name("path")
         .map(|m| m.as_str())
         .or(Some("/"))
+}
+
+/// Resolve DNS request using system nameservers.
+fn resolve(query: &str) -> Result<IpAddr, IoError> {
+    // find name servers (platform-dependent)
+    let servers = {
+        #[cfg(unix)]
+        {
+            use std::fs;
+            let resolv = fs::read_to_string("/etc/resolv.conf")?;
+            let servers = resolv
+                .lines()
+                .filter_map(|l| l.split_once("nameserver ").map(|(_, s)| s.to_string()))
+                .flat_map(|ns| ns.to_socket_addrs().into_iter().flatten())
+                .collect::<Vec<_>>();
+            servers
+        }
+        #[cfg(windows)]
+        {
+            ("8.8.8.8", 53).to_socket_addrs()?.collect::<Vec<_>>()
+        }
+    };
+
+    // request dns resolution from nameservers
+    let header: [u16; 6] = [0xabcd, 0x0100, 0x0001, 0x0000, 0x0000, 0x0000].map(|b: u16| b.to_be());
+    let question: [u16; 2] = [0x0001, 0x0001].map(|b: u16| b.to_be());
+
+    // convert query to standard dns name notation
+    let ascii = query.chars().filter(char::is_ascii).collect::<String>();
+    let name = ascii
+        .split('.')
+        .flat_map(|l| iter::once(u8::try_from(l.len()).unwrap_or(63)).chain(l.bytes().take(63)))
+        .chain(iter::once(0))
+        .collect::<Vec<u8>>();
+
+    // construct the message
+    let mut message = bytemuck::cast::<[u16; 6], [u8; 12]>(header).to_vec();
+    message.extend(&name[..]);
+    message.extend(bytemuck::cast_slice(&question));
+
+    // create the socket
+    let socket = UdpSocket::bind("0.0.0.0:0")?;
+    socket.connect(&servers[..])?;
+
+    // write dns lookup message
+    socket.send_to(&message, &servers[..]).unwrap();
+
+    // read dns response
+    let mut buf = vec![0; 1024];
+    let (n, _addr) = socket.recv_from(&mut buf)?;
+    buf.resize(n, 0);
+
+    // parse out the address
+    let answers = &buf[message.len()..];
+    let ip = &answers[12..];
+    let address = IpAddr::V4(Ipv4Addr::new(ip[0], ip[1], ip[2], ip[3]));
+
+    Ok(address)
 }
