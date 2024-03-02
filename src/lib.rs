@@ -1,16 +1,13 @@
-#![warn(clippy::all, clippy::pedantic)]
+#![warn(clippy::all, clippy::pedantic, missing_docs)]
 #![deny(unsafe_code)]
 #![doc = include_str!("../README.md")]
-
-#[cfg(test)]
-mod tests;
 
 use once_cell::sync::Lazy;
 use regex::Regex;
 use std::{
     collections::HashMap,
     fmt,
-    io::{BufRead, BufReader, Error as IoError, Write},
+    io::{self, Read, Write},
     iter,
     net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream, UdpSocket},
 };
@@ -91,6 +88,13 @@ impl<'a> Request<'a> {
             body: "",
             redirects: 4,
         }
+    }
+
+    /// Set the HTTP method of the request.
+    pub fn method(self, method: Method) -> Self {
+        let mut request = self;
+        request.method = method;
+        request
     }
 
     /// Set the URL of the request.
@@ -181,10 +185,9 @@ impl<'a> Request<'a> {
     /// let response = request.send().expect("request failed");
     /// assert_eq!(response.status, 200);
     /// ```
-    pub fn send(&self) -> Result<Response, IoError> {
+    pub fn send(&self) -> Result<Response, io::Error> {
         // format the message
         let message = format!("{self}");
-        dbg!(&message);
 
         // create the stream
         let host = resolve(host(self.url).unwrap())?;
@@ -195,26 +198,25 @@ impl<'a> Request<'a> {
         stream.write_all(message.as_bytes())?;
 
         // receive the response
-        let lines = BufReader::new(stream)
-            .lines()
-            .map_while(Result::ok)
-            .collect::<Vec<_>>();
-        let received = lines.join("\n");
+        // todo: allow larger responses by resizing response buffer
+        let mut buf = vec![0u8; 4096];
+        let n = stream.read(&mut buf)?;
+        buf.resize(n, 0);
+        let received = String::from_utf8(buf).unwrap();
 
         // check for redirects
-        if lines[0].contains("301") && self.redirects > 0 {
-            assert!(self.redirects > 0, "maximum redirect limit reached"); // todo: error for maximum redirect limit reached
-
-            // find new location
-            let location = lines
-                .iter()
+        let status: u16 = received[9..12].parse().unwrap();
+        if (300..400).contains(&status) {
+            // todo: error for maximum redirect limit reached
+            assert!(self.redirects > 0, "maximum redirect limit reached");
+            let location = received
+                .lines()
                 .find_map(|l| l.strip_prefix("Location: "))
                 .unwrap(); // todo: error for missing location in redirect
-            return self
-                .clone()
-                .redirects(self.redirects - 1)
-                .url(location)
-                .send();
+            let request = self.clone().redirects(self.redirects - 1).url(location);
+            return (status == 303)
+                .then(|| request.send())
+                .unwrap_or_else(|| request.method(Method::GET).send());
         }
 
         // process response
@@ -241,6 +243,7 @@ impl<'a> fmt::Display for Request<'a> {
 
 /// HTTP methods.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[allow(missing_docs)]
 pub enum Method {
     GET,
     HEAD,
@@ -256,10 +259,19 @@ pub enum Method {
 /// An HTTP response.
 #[derive(Debug, Clone)]
 pub struct Response {
+    /// HTTP version.
+    ///
+    /// Should be one of HTTP/1.0, HTTP/1.1, HTTP/2.0, or HTTP/3.0.
     pub version: String,
+    /// Status code.
+    ///
+    /// 100-199: info, 200-299: success, 300-399: redir, 400-499: client error, 500-599: server error.
     pub status: u16,
+    /// Message associated to the status code.
     pub reason: String,
+    /// Map of headers.
     pub headers: HashMap<String, String>,
+    /// Message body.
     pub body: Option<String>,
 }
 impl Response {
@@ -325,7 +337,7 @@ fn path(url: &str) -> Option<&str> {
 }
 
 /// Resolve DNS request using system nameservers.
-fn resolve(query: &str) -> Result<IpAddr, IoError> {
+fn resolve(query: &str) -> Result<IpAddr, io::Error> {
     // todo: local overrides
     if query.starts_with("localhost") {
         return Ok(IpAddr::V4(Ipv4Addr::LOCALHOST));
@@ -359,8 +371,9 @@ fn resolve(query: &str) -> Result<IpAddr, IoError> {
     socket.send_to(&message, &DNS_SERVERS[..]).unwrap();
 
     // read dns response
-    let mut buf = vec![0; 1024];
-    let (n, _addr) = socket.recv_from(&mut buf)?;
+    let mut buf = vec![0u8; 256];
+    socket.peek_from(&mut buf)?;
+    let n = socket.recv(&mut buf)?;
     buf.resize(n, 0);
 
     // parse out the address
@@ -392,3 +405,6 @@ static DNS_SERVERS: Lazy<Vec<SocketAddr>> = Lazy::new(|| {
         vec![SocketAddr::new(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)), 53)]
     }
 });
+
+#[cfg(test)]
+mod tests;
