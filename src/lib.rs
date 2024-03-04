@@ -2,6 +2,9 @@
 #![deny(unsafe_code)]
 #![doc = include_str!("../README.md")]
 
+#[doc(hidden)]
+mod server;
+
 use once_cell::sync::Lazy;
 use regex::Regex;
 use std::{
@@ -12,6 +15,42 @@ use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream, UdpSocket},
 };
 
+/// GET the resource at an URL.
+///
+/// This is a convenience function over using [`Request::get`] and [`Request::send`].
+///
+/// # Errors
+///
+/// May error if the provided URL is invalid, or if network issues arise.
+///
+/// # Examples
+///
+/// ```rust
+/// let response = request::get("localhost:8000").unwrap();
+/// assert_eq!(response.status, 200);
+/// ```
+pub fn get(url: &str) -> Result<Response, io::Error> {
+    Request::get(url).send()
+}
+
+/// POST a body to the URL.
+///
+/// This is a convenience function over using [`Request::post`] and [`Request::send`].
+///
+/// # Errors
+///
+/// May error if the provided URL is invalid, or if network issues arise.
+///
+/// # Examples
+///
+/// ```rust
+/// let response = request::post("localhost:8000", "hello server!").unwrap();
+/// assert_eq!(response.status, 200);
+/// ```
+pub fn post(url: &str, body: &str) -> Result<Response, io::Error> {
+    Request::post(url, body).send()
+}
+
 /// An HTTP request.
 ///
 /// # Examples
@@ -21,8 +60,7 @@ use std::{
 /// use request::Request;
 ///
 /// // ... start a local server on port 8000 ...
-/// let request = Request::get("localhost:8000");
-/// let response = request.send().unwrap();
+/// let response = request::get("localhost:8000").unwrap();
 /// assert_eq!(response.status, 200);
 /// ```
 ///
