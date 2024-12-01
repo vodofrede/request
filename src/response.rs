@@ -17,7 +17,7 @@ pub struct Response {
     /// Map of headers.
     pub headers: HashMap<String, String>,
     /// Message body.
-    pub body: Option<String>,
+    pub body: String,
 }
 impl Response {
     /// Parse the raw HTTP response into a structured [`Request`].
@@ -44,7 +44,9 @@ impl Response {
             .collect::<HashMap<String, String>>();
 
         // parse body
-        let body = parts.name("body").map(|m| m.as_str().to_string());
+        let body = parts
+            .name("body")
+            .map_or(String::new(), |m| m.as_str().to_string());
 
         // construct the response
         let response = Response {
@@ -82,6 +84,6 @@ Location: https://archlinux.org/
                 "https://archlinux.org/".to_string()
             )])
         );
-        assert_eq!(response.body, Some(String::new()));
+        assert_eq!(response.body, String::new());
     }
 }
